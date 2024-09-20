@@ -1,0 +1,43 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, sum, date_format, lag
+from pyspark.sql.window import Window
+
+spark = SparkSession.builder \
+    .appName("Sales Progression") \
+    .getOrCreate()
+
+sales_2020 = spark.read.csv("SalesData2020.csv", header=True, inferSchema=True)
+sales_2021 = spark.read.csv("SalesData2021.csv", header=True, inferSchema=True)
+sales_2022 = spark.read.csv("SalesData2022.csv", header=True, inferSchema=True)
+
+sales_data = sales_2020.union(sales_2021).union(sales_2022)
+
+products = spark.read.csv("Product.csv", header=True, inferSchema=True)
+
+joined_data = sales_data.join(products, on='ProductKey', how='inner')
+
+# Create a new column for YearMonth
+sales_with_date = joined_data.withColumn(
+    "YearMonth", date_format(col("OrderDate"), "yyyy-MM")
+)
+
+# Aggregate total sales per month
+monthly_sales = sales_with_date.groupBy("YearMonth").agg(
+    sum(col("OrderQuantity") * col("ProductPrice")).alias("TotalSales")
+)
+
+window_spec = Window.orderBy("YearMonth")
+sales_with_change = monthly_sales.withColumn(
+    "PrevMonthSales", lag(col("TotalSales")).over(window_spec)
+)
+
+result = sales_with_change.withColumn(
+    "PercentageChange",
+    (col("TotalSales") - col("PrevMonthSales")) / col("PrevMonthSales") * 100
+).filter(col("PrevMonthSales").isNotNull()) \
+ .select("YearMonth", "PercentageChange") \
+ .orderBy("YearMonth")
+
+result.show()
+
+spark.stop()
